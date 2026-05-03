@@ -1,11 +1,8 @@
 import telebot
 import os
-import re
+import random
 from dotenv import load_dotenv
 from telebot import types
-from telebot import custom_filters
-from telebot.storage import StateMemoryStorage
-from telebot.states import State, StatesGroup
 
 load_dotenv()
 
@@ -15,127 +12,142 @@ if not TOKEN:
     print('Token not found!')
     exit()
 
-state_storage = StateMemoryStorage()
-bot = telebot.TeleBot(TOKEN, state_storage=state_storage)
+bot = telebot.TeleBot(TOKEN)
 
-bot.add_custom_filter(custom_filter=custom_filters.StateFilter(bot))
+games = {}
 
-class RegistrationStates(StatesGroup):
-    waiting_for_email = State()
-    waiting_for_phone = State()
-
-reg_kb = types.ReplyKeyboardMarkup()
-reg_btn = types.KeyboardButton('Регистрация ✔')
-reg_kb.add(reg_btn)
-
-cancel_kb = types.InlineKeyboardMarkup()
-cancel_btn = types.InlineKeyboardButton('Отмена', callback_data='cancel')
-cancel_kb.add(cancel_btn)
-
-remove_kb = types.ReplyKeyboardRemove()
+# https://www.tiktok.com/@batya_razrulit/video/7281903798979759392
+WIN_COMBOS = [
+    (0,1,2),(3,4,5),(6,7,8),
+    (0,3,6),(1,4,7),(2,5,8),
+    (0,4,8),(2,4,6)
+]
 
 @bot.message_handler(commands=['start'])
-def start_handler(message):
+def start(message):
     bot.send_message(
         message.chat.id,
-        'Привет! Нажми "Регистрация" чтобы получать спам на почту!',
-        reply_markup=reg_kb
+        "Привет 👋\n\n"
+        "Чтобы начать игру в крестики-нолики, напиши:\n"
+        "/tictactoe 🎮"
     )
-
-@bot.message_handler(func=lambda message: message.text.startswith('Регистрация'))
-def start_registration(message):
-    temp_msg = bot.send_message(
-        message.chat.id,
-        '⌛ Обновляем интерфейс...',
-        reply_markup=remove_kb
+@bot.message_handler(commands=['tictactoe'])
+def start_game(message):
+    kb = types.InlineKeyboardMarkup()
+    kb.add(
+        types.InlineKeyboardButton("Играть за ❌", callback_data="start_X"),
+        types.InlineKeyboardButton("Играть за ⭕", callback_data="start_O")
     )
+    bot.send_message(message.chat.id, "Выбери сторону:", reply_markup=kb)
 
-    bot.delete_message(message.chat.id, temp_msg.id)
 
-    bot.set_state(
-        message.from_user.id,
-        RegistrationStates.waiting_for_email,
-        message.chat.id)
+def board_markup(chat_id):
+    board = games[chat_id]["board"]
+    kb = types.InlineKeyboardMarkup(row_width=3)
 
-    bot.send_message(
-        message.chat.id,
-        'Отлично! теперь отправь мне свою почту чтобы получать спам!',
-        reply_markup=cancel_kb
-    )
+    buttons = []
+    for i in range(9):
+        text = board[i] if board[i] != " " else "⬜"
+        buttons.append(types.InlineKeyboardButton(text, callback_data=f"move_{i}"))
 
-@bot.message_handler(state=RegistrationStates.waiting_for_email)
-def process_email(message):
-    email = message.text
-    email_pattern = r"^[\w\.-_]+@[\w\.-_]+\.\w+$"
+    kb.add(*buttons)
+    return kb
 
-    if re.match(email_pattern, email):
-        bot.set_state(
-            message.from_user.id,
-            RegistrationStates.waiting_for_phone,
-            message.chat.id
-        )
 
-        # сохраняем почту временно
-        with bot.retrieve_data(message.from_user.id, message.chat.id) as data:
-            data['email'] = email
+def check_win(board, symbol):
+    return any(all(board[i] == symbol for i in combo) for combo in WIN_COMBOS)
 
-        bot.send_message(
-            message.chat.id,
-            'Теперь отправь номер телефона 📱\nПример: +380XXXXXXXXX'
-        )
-    else:
-        bot.send_message(
-            message.chat.id,
-            'Не похоже на электронную почту. Попробуй ещё раз'
-        )
 
-@bot.message_handler(state=RegistrationStates.waiting_for_phone)
-def process_phone(message):
-    raw_phone = message.text
+def is_draw(board):
+    return " " not in board
 
-    phone = re.sub(r"[ \-\(\)]", "", raw_phone)
 
-    if not re.match(r"^\+?\d+$", phone):
-        bot.send_message(
-            message.chat.id,
-            "Номер должен содержать только цифры (и + в начале)"
-        )
-        return
+@bot.callback_query_handler(func=lambda call: call.data.startswith("start_"))
+def choose_side(call):
+    symbol = call.data.split("_")[1]
 
-    if not (10 <= len(phone) <= 15):
-        bot.send_message(
-            message.chat.id,
-            "Номер должен быть от 10 до 15 цифр"
-        )
-        return
+    games[call.message.chat.id] = {
+        "player": symbol,
+        "bot": "O" if symbol == "X" else "X",
+        "board": [" "] * 9,
+        "active": True
+    }
 
-    with bot.retrieve_data(message.from_user.id, message.chat.id) as data:
-        email = data.get('email')
-
-    with open('users.txt', 'a') as f:
-            f.write(f'email: {email} | phone_number: {phone}\n')
-
-    # (необязательно, но полезно)
-    print(f'New user -> email: {email}, phone_number: {phone}')
-
-    bot.delete_state(message.from_user.id, message.chat.id)
-
-    bot.send_message(
-        message.chat.id,
-        'Спасибо! Регистрация завершена ✅',
-        reply_markup=reg_kb
-    )
-
-@bot.callback_query_handler(func=lambda call: call.data == 'cancel')
-def cancel_handler(call):
-    bot.delete_state(call.from_user.id, call.message.chat.id)
-    bot.send_message(
+    bot.edit_message_text(
+        "Игра началась!",
         call.message.chat.id,
-        'Если передумаете - нажмите "Регистрация" снова.',
-        reply_markup=reg_kb
+        call.message.message_id,
+        reply_markup=board_markup(call.message.chat.id)
     )
-    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("move_"))
+def move(call):
+    chat_id = call.message.chat.id
+
+    if chat_id not in games:
+        return
+
+    game = games[chat_id]
+
+    if not game["active"]:
+        return
+
+    idx = int(call.data.split("_")[1])
+    board = game["board"]
+
+    if board[idx] != " ":
+        return
+
+    board[idx] = game["player"]
+
+    if check_win(board, game["player"]):
+        game["active"] = False
+        bot.edit_message_text(
+            "🎉 Ты выиграл!",
+            chat_id,
+            call.message.message_id
+        )
+        return
+
+    if is_draw(board):
+        game["active"] = False
+        bot.edit_message_text(
+            "🤝 Ничья!",
+            chat_id,
+            call.message.message_id
+        )
+        return
+
+    empty = [i for i, v in enumerate(board) if v == " "]
+    bot_move = random.choice(empty)
+    board[bot_move] = game["bot"]
+
+    if check_win(board, game["bot"]):
+        game["active"] = False
+        bot.edit_message_text(
+            "💀 Ты проиграл!",
+            chat_id,
+            call.message.message_id
+        )
+        return
+
+    if is_draw(board):
+        game["active"] = False
+        bot.edit_message_text(
+            "🤝 Ничья!",
+            chat_id,
+            call.message.message_id
+        )
+        return
+
+    bot.edit_message_reply_markup(
+        chat_id,
+        call.message.message_id,
+        reply_markup=board_markup(chat_id)
+    )
+
 
 if __name__ == "__main__":
-    print('Bot is running...')
+    print("Bot is running...")
     bot.infinity_polling()
