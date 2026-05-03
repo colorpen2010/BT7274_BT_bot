@@ -22,6 +22,7 @@ bot.add_custom_filter(custom_filter=custom_filters.StateFilter(bot))
 
 class RegistrationStates(StatesGroup):
     waiting_for_email = State()
+    waiting_for_phone = State()
 
 reg_kb = types.ReplyKeyboardMarkup()
 reg_btn = types.KeyboardButton('Регистрация ✔')
@@ -68,14 +69,19 @@ def process_email(message):
     email_pattern = r"^[\w\.-_]+@[\w\.-_]+\.\w+$"
 
     if re.match(email_pattern, email):
-        print(f'New email: {email}')
-        with open('emails.txt', '+a') as f:
-            f.write(email + '\n')
-        bot.delete_state(message.from_user.id, message.chat.id)
+        bot.set_state(
+            message.from_user.id,
+            RegistrationStates.waiting_for_phone,
+            message.chat.id
+        )
+
+        # сохраняем почту временно
+        with bot.retrieve_data(message.from_user.id, message.chat.id) as data:
+            data['email'] = email
+
         bot.send_message(
             message.chat.id,
-            'Спасибо! теперь спам будет приходить вам на почту!',
-            reply_markup=reg_kb
+            'Теперь отправь номер телефона 📱\nПример: +380XXXXXXXXX'
         )
     else:
         bot.send_message(
@@ -83,6 +89,42 @@ def process_email(message):
             'Не похоже на электронную почту. Попробуй ещё раз'
         )
 
+@bot.message_handler(state=RegistrationStates.waiting_for_phone)
+def process_phone(message):
+    raw_phone = message.text
+
+    phone = re.sub(r"[ \-\(\)]", "", raw_phone)
+
+    if not re.match(r"^\+?\d+$", phone):
+        bot.send_message(
+            message.chat.id,
+            "Номер должен содержать только цифры (и + в начале)"
+        )
+        return
+
+    if not (10 <= len(phone) <= 15):
+        bot.send_message(
+            message.chat.id,
+            "Номер должен быть от 10 до 15 цифр"
+        )
+        return
+
+    with bot.retrieve_data(message.from_user.id, message.chat.id) as data:
+        email = data.get('email')
+
+    with open('users.txt', 'a') as f:
+            f.write(f'email: {email} | phone_number: {phone}\n')
+
+    # (необязательно, но полезно)
+    print(f'New user -> email: {email}, phone_number: {phone}')
+
+    bot.delete_state(message.from_user.id, message.chat.id)
+
+    bot.send_message(
+        message.chat.id,
+        'Спасибо! Регистрация завершена ✅',
+        reply_markup=reg_kb
+    )
 
 @bot.callback_query_handler(func=lambda call: call.data == 'cancel')
 def cancel_handler(call):
